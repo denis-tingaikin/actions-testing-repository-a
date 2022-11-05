@@ -12,109 +12,49 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: hmarr/debug-action@v2
-  delete-previous-release:
-    name: Delete previous release
-    runs-on: ubuntu-latest
-    if: ${{ contains(github.event.workflow_run.head_branch, 'release/') }}
-    steps:          
-      - name: Get tag
-        run: |
-          branch=${{github.event.workflow_run.head_branch}}
-          echo '::set-output name=tag::'${branch#release/}
-        id: get-tag
-      - uses: actions/checkout@v2
-        with:
-          fetch-depth: '0'
-      - name: Find tag
-        run: |
-          tag=${{ steps.get-tag.outputs.tag }}
-          if [ $(git tag -l $tag) ]; then
-              echo '::set-output name=found::true'
-          else
-              echo '::set-output name=found::false'
-          fi
-          git tag -l $tag
-          echo $tag
-        id: find-previous-tag
-      - name: Delete previous release and tag
-        if: ${{steps.find-previous-tag.outputs.found }}
-        uses: dev-drprasad/delete-tag-and-release@v0.2.0
-        with:
-          delete_release: true
-          tag_name: ${{ steps.get-tag.outputs.tag }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
-  create-release:
-    needs: delete-previous-release
-    if: ${{ contains(github.event.workflow_run.head_branch, 'release/') }}
+  attempt-automerge:
     runs-on: ubuntu-latest
     steps:
-      - name: Get tag
-        run: |
-          branch=${{github.event.workflow_run.head_branch}}
-          echo '::set-output name=tag::'${branch#release/}
-        id: get-tag-step
-      - uses: dev-drprasad/delete-tag-and-release@v0.2.0
+      - name: debug
+        uses: hmarr/debug-action@v2
+      # As of 2022-07-[XX] workflow_run.conclusion is sometimes null.
+      # It was the PR merge from 1.12.264 to 265
+      # https://github.com/community/community/discussions/21090
+      - name: Get workflow_run.conclusion
+        uses: octokit/request-action@v2.1.7
+        id: get_conclusion
         with:
-          delete_release: true
-          tag_name: ${{ steps.get-tag-step.outputs.tag }}
+          route: GET /repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}
         env:
-          GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
-      - name: Create Release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.MY_TOKEN }}
-        with:
-          tag_name: refs/tags/${{ steps.get-tag-step.outputs.tag }}
-          release_name: ${{ steps.get-tag-step.outputs.tag }}
-          draft: false
-          prerelease: false
-  update-dependent-repositories:
-    strategy:
-      matrix:
-        repository:
-          - actions-testing-repository-b
-    name: Update ${{ matrix.repository }}
-    needs: create-release
-    runs-on: ubuntu-latest
-    if: ${{ contains(github.event.workflow_run.head_branch, 'release/') }}
-    steps:
-      - name: Checkout ${{ github.repository }}
-        uses: actions/checkout@v2
-        with:
-          path: ${{ github.repository }}
-          repository: ${{ github.repository }}
-          token: ${{ secrets.MY_TOKEN }}
-      - name: Get tag
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: can-query-protected-branches
+        id: can-query-protected-branches
+        continue-on-error: true
         run: |
-          branch=${{github.event.workflow_run.head_branch}}
-          echo '::set-output name=tag::'${branch#release/}
-        id: get-tag-step
-      - name: create commit
-        run: |
-          echo "Update go.mod and go.sum to latest version from ${{ github.repository }}@${{ steps.get-tag-step.outputs.tag }}" >> /tmp/commit-message
-      - name: Checkout denis-tingaikin/${{ matrix.repository }}
-        uses: actions/checkout@v2
+          BRANCH_QUERY='{ repository(name: "actions-testing-repository-a", owner: "denis-tingaikin") { branchProtectionRules(first: 10) { edges { node { id } } } } }'
+          GRAPH_QUERY=$(jq -n --arg q "$(echo $BRANCH_QUERY | tr -d '\n')" '{ query: $q}')
+          curl -X POST \
+          -si \
+          -H "Accept: application/vnd.github.package-deletes-preview+json" \
+          -H "Content-Type: application/json" \
+          -H "Authorization: bearer ${{ secrets.GITHUB_TOKEN }}" \
+          --data "$GRAPH_QUERY" \
+          --url https://api.github.com/graphql
+      - name: merge-if-build-success
+        uses: ridedott/merge-me-action@v2
+        if:  |
+          github.event.workflow_run.conclusion == 'success' ||
+          fromJson(steps.get_conclusion.outputs.data).conclusion  == 'success'
         with:
-          path: denis-tingaikin/${{ matrix.repository }}
-          repository: denis-tingaikin/${{ matrix.repository }}
-          token: ${{ secrets.MY_TOKEN }}
-      - uses: actions/setup-go@v1
-        with:
-          go-version: 1.16
-      - name: Update ${{ github.repository }} locally
-        working-directory: denis-tingaikin/${{ matrix.repository }}
-        run: |
-          GOPRIVATE=github.com/denis-tingaikin go get -u github.com/${{ github.repository }}@${{ steps.get-tag-step.outputs.tag }}
-          go mod tidy
-          git diff
-      - name: Push update to the ${{ matrix.repository }}
-        working-directory: denis-tingaikin/${{ matrix.repository }}
-        run: |
-          echo Starting to update repositotry ${{ matrix.repository }}
-          git config --global user.email "denis@tingajkin@xored.com"
-          git config --global user.name "denis.tingaikin"
-          git add go.mod go.sum
-          git commit -s -F /tmp/commit-message
-          git checkout -b ${{ github.event.workflow_run.head_branch }}
-          git push -f origin ${{ github.event.workflow_run.head_branch }}
+          # Depending on branch protection rules, a  manually populated
+          # `GITHUB_TOKEN_WORKAROUND` secret with permissions to push to
+          # a protected branch must be used. This secret can have an arbitrary
+          # name, as an example, this repository uses `DOTTBOTT_TOKEN`.
+          #
+          # When using a custom token, it is recommended to leave the following
+          # comment for other developers to be aware of the reasoning behind it:
+          #
+          # This must be used as GitHub Actions token does not support pushing
+          # to protected branches.
+          GITHUB_TOKEN: ${{ secrets.MERGE_ME_SECRET }}
+          PRESET: DEPENDABOT_MINOR
