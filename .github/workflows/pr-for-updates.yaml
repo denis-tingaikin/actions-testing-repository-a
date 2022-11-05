@@ -31,7 +31,10 @@ jobs:
         id: can-query-protected-branches
         continue-on-error: true
         run: |
-          BRANCH_QUERY='{ ${{ GITHUB_REPOSITORY }} { branchProtectionRules(first: 10) { edges { node { id } } } } }'
+          GITHUB_REPOSITORY_NAME=${GITHUB_REPOSITORY#$GITHUB_REPOSITORY_OWNER/}
+          BRANCH_QUERY='{ repository(name: "GITHUB_REPOSITORY_NAME", owner: "GITHUB_REPOSITORY_OWNER") { branchProtectionRules(first: 10) { edges { node { id } } } } }'
+          BRANCH_QUERY=${BRANCH_QUERY/GITHUB_REPOSITORY_NAME/${GITHUB_REPOSITORY_NAME}}
+          BRANCH_QUERY=${BRANCH_QUERY/GITHUB_REPOSITORY_OWNER/${GITHUB_REPOSITORY_OWNER}}
           GRAPH_QUERY=$(jq -n --arg q "$(echo $BRANCH_QUERY | tr -d '\n')" '{ query: $q}')
           curl -X POST \
           -si \
