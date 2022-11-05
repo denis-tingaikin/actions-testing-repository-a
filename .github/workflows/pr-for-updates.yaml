@@ -31,7 +31,7 @@ jobs:
         id: can-query-protected-branches
         continue-on-error: true
         run: |
-          BRANCH_QUERY='{ repository(name: "actions-testing-repository-a", owner: "denis-tingaikin") { branchProtectionRules(first: 10) { edges { node { id } } } } }'
+          BRANCH_QUERY='{ ${{ GITHUB_REPOSITORY }} { branchProtectionRules(first: 10) { edges { node { id } } } } }'
           GRAPH_QUERY=$(jq -n --arg q "$(echo $BRANCH_QUERY | tr -d '\n')" '{ query: $q}')
           curl -X POST \
           -si \
@@ -56,5 +56,5 @@ jobs:
           #
           # This must be used as GitHub Actions token does not support pushing
           # to protected branches.
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.MERGE_ME_SECRET }}
           GITHUB_LOGIN: denis-tingaikin
